@@ -24,7 +24,7 @@ class NotificationService {
   );
 
   // Combined initialization settings
-  late final InitializationSettings _initializationSettings;
+  final InitializationSettings _initializationSettings;
 
   final SharedPreferences _prefs;
   static final onNotificationClick = ValueNotifier<String?>(null);
@@ -34,39 +34,33 @@ class NotificationService {
   static const String _reminderMinuteKey = 'reminder_minute';
   static const String _reminderEnabledKey = 'reminder_enabled';
 
-  NotificationService(this._prefs) {
-    _initializationSettings = InitializationSettings(
-      android: _androidSettings,
-      iOS: _iOSSettings,
-    );
-    // Set default reminder time if not set
-    if (!_prefs.containsKey(_reminderHourKey)) {
-      _prefs.setInt(_reminderHourKey, 8); // Default 8 AM
-      _prefs.setInt(_reminderMinuteKey, 0);
-      _prefs.setBool(_reminderEnabledKey, true);
-    }
-  }
+  NotificationService(this._prefs) : _initializationSettings = InitializationSettings(
+    android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+    iOS: DarwinInitializationSettings(
+      requestSoundPermission: true,
+      requestBadgePermission: true,
+      requestAlertPermission: true,
+    ),
+  );
 
   Future<void> initialize() async {
+    print('Initializing NotificationService');
     tz.initializeTimeZones();
 
     // Request notification permissions
     if (Platform.isAndroid) {
-      // For Android, permissions are handled in the Android Manifest
-      // No runtime permission request needed for versions below Android 13
-      // For Android 13 and above, permissions are requested through the settings
+      print('Setting up Android notifications');
       final androidImplementation =
           _notifications.resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin>();
       if (androidImplementation != null) {
-        // The permissions are declared in the Android Manifest
-        // This will show the system settings if needed
-        await _notifications.initialize(
-          _initializationSettings,
-          onDidReceiveNotificationResponse: _onNotificationTap,
-        );
+        // For Android 13 and above, the permissions are handled through the system settings
+        final granted = await _notifications.resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()?.requestNotificationsPermission();
+        print('Android notifications permission granted: $granted');
       }
     } else if (Platform.isIOS) {
+      print('Requesting iOS notification permissions');
       await _notifications
           .resolvePlatformSpecificImplementation<
               IOSFlutterLocalNotificationsPlugin>()
@@ -78,25 +72,74 @@ class NotificationService {
           );
     }
 
-    // Handle notification when app is in background or terminated
-    await _notifications.getNotificationAppLaunchDetails().then((details) {
-      if (details != null && details.didNotificationLaunchApp) {
-        onNotificationClick.value = details.notificationResponse?.payload;
-      }
-    });
-
+    // Initialize notifications plugin
     await _notifications.initialize(
       _initializationSettings,
-      onDidReceiveNotificationResponse: (details) {
-        // Handle notification tap
-      },
+      onDidReceiveNotificationResponse: _onNotificationTap,
+      onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
     );
+    print('Notifications initialized');
+
+    // Test notification immediately
+    await showForegroundNotification(
+      title: 'Test Notification',
+      body: 'Testing if notifications are working',
+    );
+    print('Test notification sent');
+
+    // Initialize background service
     await BackgroundService.initialize();
+    print('Background service initialized');
+
+    // Schedule the daily reminder
+    await scheduleAttendanceReminder();
+    print('Daily reminder scheduled');
   }
 
   void _onNotificationTap(NotificationResponse details) {
-    // Handle notification tap
+    onNotificationClick.value = details.payload;
     print('Notification tapped: ${details.payload}');
+  }
+
+  Future<void> showForegroundNotification({
+    required String title,
+    required String body,
+    String? payload,
+  }) async {
+    print('Showing foreground notification: $title - $body');
+    
+    final androidDetails = AndroidNotificationDetails(
+      'attendance_reminder',
+      'Attendance Reminders',
+      channelDescription: 'Daily reminders to mark attendance',
+      importance: Importance.max,
+      priority: Priority.high,
+      enableLights: true,
+      enableVibration: true,
+      fullScreenIntent: true,
+    );
+
+    final notificationDetails = NotificationDetails(
+      android: androidDetails,
+      iOS: const DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+      ),
+    );
+
+    try {
+      await _notifications.show(
+        DateTime.now().millisecond,
+        title,
+        body,
+        notificationDetails,
+        payload: payload,
+      );
+      print('Notification shown successfully');
+    } catch (e) {
+      print('Error showing notification: $e');
+    }
   }
 
   Future<void> scheduleAttendanceReminder() async {
@@ -117,24 +160,58 @@ class NotificationService {
       scheduledDate = scheduledDate.add(const Duration(days: 1));
     }
 
+    // Cancel any existing notifications
+    await _notifications.cancelAll();
+
+    // Schedule the new notification with high priority
+    final androidDetails = AndroidNotificationDetails(
+      'attendance_reminder',
+      'Attendance Reminders',
+      channelDescription: 'Daily reminders to mark attendance',
+      importance: Importance.max,
+      priority: Priority.high,
+      enableLights: true,
+      enableVibration: true,
+      fullScreenIntent: true,
+    );
+
+    final notificationDetails = NotificationDetails(
+      android: androidDetails,
+      iOS: const DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+      ),
+    );
+
+    // Schedule the notification
     await _notifications.zonedSchedule(
       0,
       'Attendance Reminder',
-      'Don\'t forget to mark your attendance!',
+      'Time to mark your attendance!',
       tz.TZDateTime.from(scheduledDate, tz.local),
-      PlatformSpecificNotifications.getPlatformChannelSpecifics(),
+      notificationDetails,
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
       uiLocalNotificationDateInterpretation:
           UILocalNotificationDateInterpretation.absoluteTime,
       matchDateTimeComponents: DateTimeComponents.time,
       payload: 'attendance_reminder',
     );
+
+    // Also update the background service schedule
+    await BackgroundService.registerPeriodicTask();
   }
 
   Future<void> updateReminderTime(TimeOfDay time) async {
     await _prefs.setInt(_reminderHourKey, time.hour);
     await _prefs.setInt(_reminderMinuteKey, time.minute);
+    
+    // Cancel existing notifications and reschedule
+    await cancelReminder();
     await scheduleAttendanceReminder();
+    
+    // Update background service
+    await BackgroundService.registerPeriodicTask();
   }
 
   Future<TimeOfDay> getReminderTime() async {
@@ -147,6 +224,7 @@ class NotificationService {
     await _prefs.setBool(_reminderEnabledKey, enabled);
     if (enabled) {
       await scheduleAttendanceReminder();
+      await BackgroundService.registerPeriodicTask();
     } else {
       await cancelReminder();
     }
@@ -157,7 +235,7 @@ class NotificationService {
   }
 
   Future<void> cancelReminder() async {
-    await _notifications.cancel(0);
+    await _notifications.cancelAll();
     await BackgroundService.cancelAllTasks();
   }
 }

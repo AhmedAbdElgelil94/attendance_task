@@ -29,7 +29,11 @@ Future<void> setupDependencies() async {
   GetIt.I.registerSingleton<FlutterSecureStorage>(secureStorage);
   GetIt.I.registerSingleton<DatabaseHelper>(DatabaseHelper());
   GetIt.I.registerSingleton<BiometricService>(BiometricService(localAuth));
-  GetIt.I.registerSingleton<NotificationService>(NotificationService(prefs));
+  
+  // Initialize and register notification service
+  final notificationService = NotificationService(prefs);
+  await notificationService.initialize();
+  GetIt.I.registerSingleton<NotificationService>(notificationService);
   
   // Register AuthService with its dependencies
   GetIt.I.registerSingleton<AuthService>(
@@ -52,19 +56,16 @@ Future<void> setupDependencies() async {
   );
 }
 
-void main() async {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Setup dependencies (including notification initialization)
   await setupDependencies();
 
-  // Initialize notifications
-  final notificationService = GetIt.I<NotificationService>();
-  await notificationService.initialize();
-  await notificationService.scheduleAttendanceReminder();
-
-  // Initialize auth bloc
+  // Initialize auth state
   final authBloc = GetIt.I<AuthBloc>();
   authBloc.add(CheckAuthEvent());
-
+  
   runApp(const MyApp());
 }
 
@@ -75,25 +76,14 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiBlocProvider(
       providers: [
-        BlocProvider<AuthBloc>(
-          create: (context) => GetIt.I<AuthBloc>(),
-        ),
-        BlocProvider<AttendanceBloc>(
-          create: (context) => GetIt.I<AttendanceBloc>(),
-        ),
+        BlocProvider<AuthBloc>.value(value: GetIt.I<AuthBloc>()),
+        BlocProvider<AttendanceBloc>.value(value: GetIt.I<AttendanceBloc>()),
       ],
       child: MaterialApp(
         title: 'Attendance App',
-        debugShowCheckedModeBanner: false,
         theme: AppTheme.light,
-        home: BlocBuilder<AuthBloc, AuthState>(
-          builder: (context, state) {
-            if (state is Authenticated) {
-              return const HomeScreen();
-            }
-            return const LoginScreen();
-          },
-        ),
+        debugShowCheckedModeBanner: false,
+        home: const LoginScreen(),
       ),
     );
   }

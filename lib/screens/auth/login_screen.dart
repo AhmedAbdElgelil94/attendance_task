@@ -27,11 +27,16 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _checkBiometricAvailability() async {
+    if (!mounted) return;
+    
     final authBloc = context.read<AuthBloc>();
     final canUseBiometrics = await authBloc.canUseBiometrics();
-    setState(() {
-      _showBiometricButton = canUseBiometrics;
-    });
+    
+    if (mounted) {
+      setState(() {
+        _showBiometricButton = canUseBiometrics;
+      });
+    }
   }
 
   @override

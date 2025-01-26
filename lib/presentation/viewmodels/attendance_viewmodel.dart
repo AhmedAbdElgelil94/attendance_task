@@ -5,12 +5,14 @@ import '../../domain/entities/attendance.dart';
 import '../../domain/usecases/get_attendance.dart';
 import '../../domain/usecases/check_in.dart';
 import '../../domain/usecases/check_out.dart';
+import '../../domain/services/notification_service.dart';
 
 class AttendanceViewModel extends ChangeNotifier {
   final GetAttendanceUseCase getAttendanceUseCase;
   final CheckInUseCase checkInUseCase;
   final CheckOutUseCase checkOutUseCase;
   final Connectivity connectivity;
+  final NotificationService notificationService;
 
   List<Attendance> _records = [];
   bool _isLoading = false;
@@ -32,6 +34,7 @@ class AttendanceViewModel extends ChangeNotifier {
     required this.checkInUseCase,
     required this.checkOutUseCase,
     required this.connectivity,
+    required this.notificationService,
   }) {
     _setupConnectivity();
   }
@@ -101,54 +104,47 @@ class AttendanceViewModel extends ChangeNotifier {
   }
 
   Future<void> checkIn(String userId) async {
-    if (!_isOnline) {
-      _error = const NetworkFailure('No internet connection available');
-      notifyListeners();
-      return;
+    try {
+      final result = await checkInUseCase(userId);
+      result.fold(
+        (failure) => _error = failure,
+        (success) {
+          loadAttendanceRecords(userId);
+          notificationService.showForegroundNotification(
+            title: 'Check-in Successful',
+            body: 'You have successfully checked in.',
+            payload: 'check_in',
+          );
+        },
+      );
+    } catch (e) {
+      _error = Failure(e.toString());
     }
-
-    final result = await checkInUseCase(userId);
-    
-    result.when(
-      success: (data) async {
-        _records.insert(0, data);
-        _error = null;
-        notifyListeners();
-      },
-      error: (failure) {
-        _error = failure;
-        notifyListeners();
-      },
-    );
+    notifyListeners();
   }
 
   Future<void> checkOut(String userId) async {
-    if (!_isOnline) {
-      _error = const NetworkFailure('No internet connection available');
-      notifyListeners();
-      return;
+    try {
+      final result = await checkOutUseCase(userId);
+      result.fold(
+        (failure) => _error = failure,
+        (success) {
+          loadAttendanceRecords(userId);
+          notificationService.showForegroundNotification(
+            title: 'Check-out Successful',
+            body: 'You have successfully checked out.',
+            payload: 'check_out',
+          );
+        },
+      );
+    } catch (e) {
+      _error = Failure(e.toString());
     }
-
-    final result = await checkOutUseCase(userId);
-    
-    result.when(
-      success: (data) async {
-        final index = _records.indexWhere((record) => record.id == data.id);
-        if (index != -1) {
-          _records[index] = data;
-        }
-        _error = null;
-        notifyListeners();
-      },
-      error: (failure) {
-        _error = failure;
-        notifyListeners();
-      },
-    );
+    notifyListeners();
   }
 
   void clearError() {
     _error = null;
     notifyListeners();
   }
-} 
+}
